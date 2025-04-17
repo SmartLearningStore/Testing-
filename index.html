@@ -1,0 +1,131 @@
+<!DOCTYPE html><html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DXF Gallery Viewer - বস রুবেল</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/dxf-parser/dist/dxf-parser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom/dist/svg-pan-zoom.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <style>
+    body {margin:0;padding:0;background:#000;color:#fff;font-family:'Segoe UI',sans-serif;}
+    input, button {outline:2px solid #0ff;background:transparent;color:#fff;border:none;padding:.5em 1em;border-radius:.5em;margin:.5em;cursor:pointer;transition:transform .1s;}
+    button:active{transform:scale(.95)}
+    #fileInput{width:calc(100% - 2em);max-width:400px;}
+    #gallery{display:flex;flex-direction:column;gap:10px;padding:10px;align-items:center;overflow-y:auto;max-height:calc(100vh - 60px);}
+    .thumb{width:90%;max-width:500px;height:200px;background:#111;border:1px solid #333;border-radius:.5em;position:relative;overflow:hidden;}
+    .thumb svg{width:100%;height:100%;}
+    .actions{position:absolute;bottom:5px;left:5px;right:5px;display:flex;gap:5px;}
+    #viewerOverlay{position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,.95);display:none;align-items:center;justify-content:center;flex-direction:column;padding:1em;box-sizing:border-box;}
+    .zoom-container{width:95vw;max-width:900px;height:80vh;background:#000;position:relative;margin-bottom:1em;}
+    .zoom-container svg{width:100%;height:100%;}
+    #menuBtn{position:absolute;top:1em;right:1em;font-size:1.5em;background:none;border:none;color:#fff;cursor:pointer;z-index:20;}
+    #menuDropdown{position:absolute;top:3.5em;right:1em;background:#fff;color:#000;border-radius:.5em;display:none;flex-direction:column;min-width:180px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.2);z-index:10;padding:0;}
+    #menuDropdown button{background:transparent;color:#000;border:none;padding:.75em 1em;text-align:left;cursor:pointer;}
+    #menuDropdown button:not(:last-child){border-bottom:1px solid #ddd;}
+    #overlayControls{display:flex;gap:10px;margin-top:1em;}
+    .loader{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);border:8px solid #111;border-top:8px solid #0ff;border-radius:50%;width:60px;height:60px;animation:spin 1s linear infinite;z-index:30;}
+    @keyframes spin{0%{transform:translate(-50%,-50%) rotate(0)}100%{transform:translate(-50%,-50%) rotate(360deg)}}
+  </style>
+</head>
+<body>
+  <input type="file" id="fileInput" multiple accept=".dxf">
+  <div id="gallery"></div>  <div id="viewerOverlay">
+    <div class="zoom-container" id="zoomContainer">
+      <svg id="largeCanvas" xmlns="http://www.w3.org/2000/svg"></svg>
+      <button id="menuBtn"><i class="bi bi-three-dots"></i></button>
+      <div id="menuDropdown">
+        <button id="screenshotBtn">স্ক্রিনশট ডাউনলোড</button>
+        <button id="dxfDownloadBtn">DXF ডাউনলোড</button>
+      </div>
+    </div>
+    <div id="overlayControls">
+      <button id="resetViewBtn">রিসেট ভিউ</button>
+      <button id="closeBtn">বন্ধ করুন</button>
+    </div>
+  </div>  <script>
+    const loaderClass = 'loader';
+    function showLoader(){ if(!document.querySelector('.'+loaderClass)){const l=document.createElement('div');l.className=loaderClass;document.body.append(l);} }
+    function hideLoader(){ const l=document.querySelector('.'+loaderClass); if(l) l.remove(); }
+
+    const fileInput=document.getElementById('fileInput');
+    const gallery=document.getElementById('gallery');
+    const overlay=document.getElementById('viewerOverlay');
+    const zoomContainer=document.getElementById('zoomContainer');
+    const largeCanvas=document.getElementById('largeCanvas');
+    const menuBtn=document.getElementById('menuBtn');
+    const menuDropdown=document.getElementById('menuDropdown');
+    const screenshotBtn=document.getElementById('screenshotBtn');
+    const dxfDownloadBtn=document.getElementById('dxfDownloadBtn');
+    const resetViewBtn=document.getElementById('resetViewBtn');
+    const closeBtn=document.getElementById('closeBtn');
+    let panZoomInstance=null, currentContent='', currentName='';
+
+    const storedFiles=JSON.parse(localStorage.getItem('dxfFiles')||'[]');
+    storedFiles.forEach(f=>addThumb(f.name,f.content));
+
+    fileInput.addEventListener('change', e=>{
+      Array.from(e.target.files).forEach(file=>{
+        showLoader();
+        const reader=new FileReader();
+        reader.onload=()=>{
+          requestAnimationFrame(()=>{
+            addThumb(file.name, reader.result, true);
+            storedFiles.unshift({name:file.name, content:reader.result});
+            localStorage.setItem('dxfFiles', JSON.stringify(storedFiles));
+            hideLoader();
+          });
+        };
+        reader.readAsText(file);
+      });
+    });
+
+    function addThumb(name, content, prepend=false){
+      const parser=new DxfParser(); let dxf;
+      try{ dxf=parser.parseSync(content); }
+      catch(err){ alert('DXF পার্স করতে পারলাম না: '+err); hideLoader(); return; }
+      const container=document.createElement('div'); container.className='thumb';
+      const svgEl=document.createElementNS('http://www.w3.org/2000/svg','svg'); drawDXF(dxf, svgEl);
+      const actions=document.createElement('div'); actions.className='actions';
+      const openBtn=document.createElement('button'); openBtn.textContent='Open'; openBtn.onclick=()=>showOverlay(content,name);
+      const delBtn=document.createElement('button'); delBtn.textContent='Del'; delBtn.onclick=()=>{
+        gallery.removeChild(container);
+        const idx=storedFiles.findIndex(f=>f.name===name);
+        if(idx!==-1)storedFiles.splice(idx,1);
+        localStorage.setItem('dxfFiles',JSON.stringify(storedFiles));
+      };
+      actions.append(openBtn, delBtn);
+      container.append(svgEl, actions);
+      prepend ? gallery.prepend(container) : gallery.appendChild(container);
+    }
+
+    function drawDXF(dxf, svg){
+      let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+      function upd(x,y){ minX=Math.min(minX,x); minY=Math.min(minY,y); maxX=Math.max(maxX,x); maxY=Math.max(maxY,y); }
+      svg.innerHTML='<defs><filter id="glow"><feGaussianBlur stdDeviation="0.3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></defs>';
+      dxf.entities.forEach(e=>{
+        let elem;
+        if(e.type==='LINE' || e.vertices){ elem=document.createElementNS(svg.namespaceURI,'polyline'); const pts=(e.vertices||[]).map(v=>{ upd(v.x,-v.y); return `${v.x},${-v.y}`; }).join(' '); elem.setAttribute('points',pts); elem.setAttribute('fill','none'); }
+        else if(e.type==='CIRCLE'){ elem=document.createElementNS(svg.namespaceURI,'circle'); elem.setAttribute('cx',e.center.x); elem.setAttribute('cy',-e.center.y); elem.setAttribute('r',e.radius); upd(e.center.x-e.radius,-e.center.y-e.radius); upd(e.center.x+e.radius,-e.center.y+e.radius); }
+        if(elem){ elem.setAttribute('stroke','white'); elem.setAttribute('stroke-width','0.2'); elem.setAttribute('filter','url(#glow)'); elem.setAttribute('vector-effect','non-scaling-stroke'); svg.append(elem); }
+      });
+      const w=maxX-minX||100, h=maxY-minY||100;
+      svg.setAttribute('viewBox',`${minX} ${minY} ${w} ${h}`);
+    }
+
+    function showOverlay(content,name){
+      currentContent=content; currentName=name;
+      const dxf=new DxfParser().parseSync(content);
+      drawDXF(dxf, largeCanvas);
+      overlay.style.display='flex';
+      if(panZoomInstance) panZoomInstance.destroy();
+      panZoomInstance=svgPanZoom(largeCanvas, {zoomEnabled:true, panEnabled:true, fit:true, center:true, minZoom:0.3, maxZoom:20, zoomScaleSensitivity:0.2});
+    }
+
+    menuBtn.onclick=()=>{ menuDropdown.style.display = menuDropdown.style.display==='flex' ? 'none' : 'flex'; };
+    screenshotBtn.onclick=()=>{ html2canvas(zoomContainer,{backgroundColor:'#000',scale:window.devicePixelRatio||2}).then(canvas=>{ canvas.toBlob(blob=>{ const link=document.createElement('a'); link.download='screenshot.png'; link.href=URL.createObjectURL(blob); document.body.append(link); link.click(); link.remove(); }); }); };
+    dxfDownloadBtn.onclick=()=>{ const fname=prompt('ফাইলের নাম লিখুন:',currentName.replace(/\.dxf$/i,'')); if(!fname) return; const blob=new Blob([currentContent],{type:'application/dxf'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`${fname}.dxf`; document.body.append(a); a.click(); a.remove(); URL.revokeObjectURL(url); };
+    resetViewBtn.onclick=()=>{ if(panZoomInstance){ panZoomInstance.resetZoom(); panZoomInstance.center(); panZoomInstance.fit(); } };
+    closeBtn.onclick=()=>{ overlay.style.display='none'; if(panZoomInstance) panZoomInstance.destroy(); menuDropdown.style.display='none'; };
+  </script></body>
+  </html>
